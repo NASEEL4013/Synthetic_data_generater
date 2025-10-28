@@ -118,34 +118,64 @@ class Config:
     }
 
 # ----------------------------------------------------
-# 2. 사용자 생성 함수
+# 2. 사용자 생성 함수 (기존 함수 삭제됨)
 # ----------------------------------------------------
-def create_new_user(config, user_sequence):
-    profile = random.choices(list(config.USER_PROFILES.keys()), weights=list(config.USER_PROFILES.values()), k=1)[0]
-    gender = random.choices(list(config.GENDER_RATIO.keys()), weights=list(config.GENDER_RATIO.values()), k=1)[0]
-    min_age, max_age = config.PROFILE_TO_AGE_RANGE[profile]
-    age = random.randint(min_age, max_age)
-    user_id = f"{user_sequence:08d}"
-    login_type = random.choices(list(config.USER_INITIAL_LOGIN_RATIO.keys()), weights=list(config.USER_INITIAL_LOGIN_RATIO.values()), k=1)[0]
-    
-    return {
-        'user_id': user_id,
-        'gender': gender,
-        'age': age,
-        'profile': profile,
-        'join_date': datetime.now().strftime('%Y-%m-%d'),
-        'initial_login_status': (login_type == 'login')
-    }
 
 # ----------------------------------------------------
-# 3. 메인 데이터 생성기 클래스
+# 3. 메인 데이터 생성기 클래스 (user_pool 로드 로직 추가)
 # ----------------------------------------------------
 class SyntheticDataGenerator:
-    def __init__(self, config, book_db, input_data):
+    def __init__(self, config, book_db, input_data, user_pool_path='user_pool.csv'):
         self.config = config
         self.book_db = book_db
         self.input_data = input_data
-        self.user_counter = 1
+        
+        # user_pool 로드
+        try:
+            self.user_pool = pd.read_csv(user_pool_path)
+            print(f"✅ 사용자 풀 ('{user_pool_path}') 로딩 성공!")
+        except FileNotFoundError:
+            print(f"⚠️ 사용자 풀 ('{user_pool_path}')을 찾을 수 없습니다. 프로그램을 종료합니다.")
+            exit(0)
+
+        # 프로필 비율에 맞는 유저 선택을 위한 가중치 계산
+        self.weights = []
+        total_weight = sum(self.config.USER_PROFILES.values())
+        
+        for profile in self.user_pool['profile']:
+            # 해당 유저의 프로필에 해당하는 Config 비율을 가중치로 사용
+            weight = self.config.USER_PROFILES.get(profile, 0) / total_weight 
+            self.weights.append(weight)
+
+        # 가중치 정규화 (선택 로직의 안정성 확보)
+        weight_sum = sum(self.weights)
+        if weight_sum > 0:
+            self.weights = [w / weight_sum for w in self.weights]
+        else:
+            print("⚠️ 유저 풀의 프로필이 Config와 일치하지 않아 가중치 부여가 불가능합니다. 균등 확률을 사용합니다.")
+            self.weights = [1.0 / len(self.user_pool)] * len(self.user_pool)
+            
+    def _get_random_user(self):
+        """
+        Config의 USER_PROFILES 비율에 맞춰 user_pool에서 사용자 1명을 선택합니다.
+        선택된 행(row)을 딕셔너리 형태로 반환합니다.
+        """
+        # 가중치를 적용하여 user_pool에서 하나의 행(유저)을 선택
+        selected_user_row = self.user_pool.sample(n=1, weights=self.weights).iloc[0]
+        
+        # 필요한 정보만 추출하여 딕셔너리로 반환 (세션 시작 시 로그인 상태 추가)
+        login_type = random.choices(
+            list(self.config.USER_INITIAL_LOGIN_RATIO.keys()), 
+            weights=list(self.config.USER_INITIAL_LOGIN_RATIO.values()), k=1
+        )[0]
+        
+        return {
+            'user_id': selected_user_row['user_id'],
+            'gender': selected_user_row['gender'],
+            'age': selected_user_row['age'], # int64 타입이 유지될 수 있음
+            'profile': selected_user_row['profile'],
+            'initial_login_status': (login_type == 'login')
+        }
 
     def _get_next_action(self, prob_dict):
         return random.choices(list(prob_dict.keys()), weights=list(prob_dict.values()), k=1)[0]
@@ -173,8 +203,8 @@ class SyntheticDataGenerator:
         return all_event_logs
         
     def _create_one_session(self):
-        user = create_new_user(self.config, self.user_counter)
-        self.user_counter += 1
+        # 유저 풀에서 유저를 가져옴 (기존 create_new_user 호출 대체)
+        user = self._get_random_user()
         
         session_id = str(uuid.uuid4())
         event_logs = []
@@ -194,9 +224,10 @@ class SyntheticDataGenerator:
             if chosen_action == 'out':
                 break
 
-            # 다음 행동 분기점을 결정하는 로직
+            # 다음 행동 분기점을 결정하는 로직 (유지)
             if chosen_action == 'login':
                 current_rule_name = 'PROB_ON_LOGIN_ATTEMPT'
+                # (참고: 로그인 성공 시 is_logged_in 상태 변경 로직 추가 필요)
             elif chosen_action in ['search', 'search_text', 'view_recommended_item']:
                 current_rule_name = 'PROB_VIEW_ITEM_LIST'
             elif chosen_action in ['item', 'click_item']:
@@ -225,8 +256,20 @@ class SyntheticDataGenerator:
         return event_logs
 
 # ----------------------------------------------------
-# 4. 테스트 코드
+# 4. 테스트 코드 (JSON 직렬화 및 CSV 저장 로직 포함)
 # ----------------------------------------------------
+
+# NumPy 타입(int64 등)을 Python 표준 타입으로 변환하기 위한 함수
+def convert_to_python_native(obj):
+    # pandas에서 오는 int64와 같은 NumPy 정수 타입을 파이썬 int로 변환
+    if obj.__class__.__name__ in ['int64', 'int32', 'int16']:
+        return int(obj)
+    # 다른 타입에 대한 처리 (예: datetime 객체)
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    # 그 외 처리하지 못한 타입은 에러 발생
+    raise TypeError(f'Object of type {obj.__class__.__name__} is not JSON serializable')
+
 if __name__ == '__main__':
     # --- Input 데이터 ---
     test_input = {
@@ -241,11 +284,45 @@ if __name__ == '__main__':
         print("✅ 서적 DB ('biblio_data.csv') 로딩 성공!")
     except FileNotFoundError:
         print("⚠️ 'biblio_data.csv'을 찾을 수 없습니다.")
-        exit(0);
+        book_db = pd.DataFrame() 
+        
     # --- 생성기 실행 ---
-    generator = SyntheticDataGenerator(config, book_db, test_input)
+    # 변수명이 정확하게 config, book_db, test_input으로 전달되고 있음.
+    generator = SyntheticDataGenerator(config, book_db, test_input, user_pool_path='user_pool.csv') 
     generated_data = generator.generate_sessions()
 
-    # --- 결과 출력 ---
+    # --- 결과 출력 및 저장 (유저 기준으로 정리) ---
     print("\n--- 생성된 전체 세션 데이터 ---")
-    print(json.dumps(generated_data, indent=2, ensure_ascii=False))
+    
+    # 1. generated_data를 DataFrame으로 변환
+    log_df = pd.DataFrame(generated_data)
+
+    # 2. 'properties' 딕셔너리를 별도 컬럼으로 분리 (로그인 상태 등)
+    if 'properties' in log_df.columns and not log_df['properties'].isnull().all():
+        properties_df = pd.json_normalize(log_df['properties'])
+        log_df = pd.concat([log_df.drop('properties', axis=1), properties_df], axis=1)
+
+    # 3. user_id와 timestamp를 기준으로 정렬
+    log_df_sorted = log_df.sort_values(by=['user_id', 'timestamp'])
+
+    # 4. DataFrame을 XLSX 파일로 저장하도록 변경
+    # --- pip install openpyxl 명령어로 라이브러리가 설치되어 있어야 합니다. ---
+    OUTPUT_LOG_FILE = 'synthetic_event_logs_by_user.xlsx'
+    
+    try:
+        # 엑셀 파일로 저장 (Sheet 이름을 지정할 수 있음)
+        log_df_sorted.to_excel(
+            OUTPUT_LOG_FILE, 
+            sheet_name='User_Event_Logs', 
+            index=False # <--- 이 뒤의 'encoding'만 제거하면 돼!
+        )
+
+        print(f"✅ 유저별로 정리된 이벤트 로그가 '{OUTPUT_LOG_FILE}' (XLSX) 파일로 저장되었습니다. (총 {len(log_df_sorted)}개)")
+    
+    except ImportError:
+        print("\n❌ 에러: XLSX 파일 저장을 위해 'openpyxl' 라이브러리가 필요합니다.")
+        print("    터미널에서 'pip install openpyxl' 명령어를 실행해주세요.")
+        
+    # 5. 콘솔에 JSON 형식으로 출력 (디버깅 용이)
+    print("\n--- 콘솔 JSON 출력 (상위 5개 이벤트) ---")
+    print(json.dumps(generated_data[:5], indent=2, ensure_ascii=False, default=convert_to_python_native))
