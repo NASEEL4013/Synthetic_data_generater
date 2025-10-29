@@ -2,7 +2,8 @@ import pandas as pd
 import random
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timedelta 
+import sys # 프로그램 종료를 위해 sys.exit() 사용
 
 # ----------------------------------------------------
 # 1. Config 클래스: 모든 규칙과 확률 정의
@@ -33,7 +34,14 @@ class Config:
         'not_login': 0.05
     }
 
-    # --- 행동 시나리오 확률 ---
+    # --- 사용자 활동 빈도 티어 (세션 할당 가중치) ---
+    SESSION_FREQUENCY_TIERS = {
+        'High': 0.6,
+        'Medium': 0.3,
+        'Low': 0.1
+    }
+
+    # --- 행동 시나리오 확률 (유지) ---
     PROB_ON_LOGIN_ATTEMPT = {
         'login_success': 0.9,
         'out': 0.1
@@ -117,18 +125,33 @@ class Config:
         'out': 0.25
     }
 
-# ----------------------------------------------------
-# 2. 사용자 생성 함수 (기존 함수 삭제됨)
-# ----------------------------------------------------
+    # --- 이벤트/페이지별 체류 시간 (초 단위) ---
+    TIME_DELAY_SECONDS = {
+        'default': (1, 3), 
+        'PROB_MAINPAGE_LOGIN': (3, 7),
+        'PROB_MAINPAGE_NOT_LOGIN': (2, 5),
+        'PROB_SEARCH': (5, 12),
+        'PROB_VIEW_ITEM_LIST': (8, 15),
+        'PROB_VIEW_ITEM_LOGIN': (15, 30),
+        'PROB_RECOMMANDED_ITEM': (4, 10),
+        'PROB_MYPAGE_LOGIN': (7, 15),
+        'PROB_ORDER_DETAIL': (10, 20),
+        'PROB_ACTION_AFTER_VIEW_CART': (10, 25),
+        'PROB_PURCHASE_CLEAR': (5, 10)
+    }
 
 # ----------------------------------------------------
-# 3. 메인 데이터 생성기 클래스 (user_pool 로드 로직 추가)
+# 2. 메인 데이터 생성기 클래스
 # ----------------------------------------------------
 class SyntheticDataGenerator:
     def __init__(self, config, book_db, input_data, user_pool_path='user_pool.csv'):
         self.config = config
         self.book_db = book_db
-        self.input_data = input_data
+        
+        # 기간 및 세션 수 데이터 로드
+        self.total_sessions = input_data.get('total_sessions', 100)
+        self.start_date = datetime.strptime(input_data['start_date'], '%Y-%m-%d')
+        self.end_date = datetime.strptime(input_data['end_date'], '%Y-%m-%d')
         
         # user_pool 로드
         try:
@@ -136,34 +159,49 @@ class SyntheticDataGenerator:
             print(f"✅ 사용자 풀 ('{user_pool_path}') 로딩 성공!")
         except FileNotFoundError:
             print(f"⚠️ 사용자 풀 ('{user_pool_path}')을 찾을 수 없습니다. 프로그램을 종료합니다.")
-            exit(0)
+            sys.exit(0)
 
-        # 프로필 비율에 맞는 유저 선택을 위한 가중치 계산
-        self.weights = []
-        total_weight = sum(self.config.USER_PROFILES.values())
-        
-        for profile in self.user_pool['profile']:
-            # 해당 유저의 프로필에 해당하는 Config 비율을 가중치로 사용
-            weight = self.config.USER_PROFILES.get(profile, 0) / total_weight 
-            self.weights.append(weight)
-
-        # 가중치 정규화 (선택 로직의 안정성 확보)
-        weight_sum = sum(self.weights)
-        if weight_sum > 0:
-            self.weights = [w / weight_sum for w in self.weights]
+        # 샘플링된 유저 풀 생성 및 가중치 계산
+        self.users_to_sample = input_data.get('users_to_sample', len(self.user_pool))
+        if self.users_to_sample < len(self.user_pool):
+            self.sampled_user_pool = self.user_pool.sample(n=self.users_to_sample, replace=False) 
         else:
-            print("⚠️ 유저 풀의 프로필이 Config와 일치하지 않아 가중치 부여가 불가능합니다. 균등 확률을 사용합니다.")
-            self.weights = [1.0 / len(self.user_pool)] * len(self.user_pool)
+            self.sampled_user_pool = self.user_pool
             
+        # 1. 프로필 가중치 계산
+        profile_weights = []
+        total_profile_weight = sum(self.config.USER_PROFILES.values())
+        for profile in self.sampled_user_pool['profile']:
+            weight = self.config.USER_PROFILES.get(profile, 0) / total_profile_weight 
+            profile_weights.append(weight)
+
+        # 2. 활동 빈도 티어 할당 및 최종 세션 가중치 계산
+        tiers = list(self.config.SESSION_FREQUENCY_TIERS.keys())
+        tier_weights = list(self.config.SESSION_FREQUENCY_TIERS.values())
+        
+        assigned_tiers = random.choices(tiers, weights=tier_weights, k=len(self.sampled_user_pool))
+        self.sampled_user_pool['frequency_tier'] = assigned_tiers
+        
+        frequency_map = self.config.SESSION_FREQUENCY_TIERS
+        self.session_weights = [
+            profile_weights[i] * frequency_map[self.sampled_user_pool.iloc[i]['frequency_tier']]
+            for i in range(len(self.sampled_user_pool))
+        ]
+        
+        # 최종 가중치 정규화
+        weight_sum = sum(self.session_weights)
+        if weight_sum > 0:
+            self.session_weights = [w / weight_sum for w in self.session_weights]
+        else:
+            self.session_weights = [1.0 / len(self.sampled_user_pool)] * len(self.sampled_user_pool)
+            
+
     def _get_random_user(self):
         """
-        Config의 USER_PROFILES 비율에 맞춰 user_pool에서 사용자 1명을 선택합니다.
-        선택된 행(row)을 딕셔너리 형태로 반환합니다.
+        활동 빈도와 프로필 비율에 맞춰 sampled_user_pool에서 사용자 1명을 선택합니다.
         """
-        # 가중치를 적용하여 user_pool에서 하나의 행(유저)을 선택
-        selected_user_row = self.user_pool.sample(n=1, weights=self.weights).iloc[0]
+        selected_user_row = self.sampled_user_pool.sample(n=1, weights=self.session_weights).iloc[0]
         
-        # 필요한 정보만 추출하여 딕셔너리로 반환 (세션 시작 시 로그인 상태 추가)
         login_type = random.choices(
             list(self.config.USER_INITIAL_LOGIN_RATIO.keys()), 
             weights=list(self.config.USER_INITIAL_LOGIN_RATIO.values()), k=1
@@ -172,7 +210,7 @@ class SyntheticDataGenerator:
         return {
             'user_id': selected_user_row['user_id'],
             'gender': selected_user_row['gender'],
-            'age': selected_user_row['age'], # int64 타입이 유지될 수 있음
+            'age': selected_user_row['age'],
             'profile': selected_user_row['profile'],
             'initial_login_status': (login_type == 'login')
         }
@@ -180,58 +218,107 @@ class SyntheticDataGenerator:
     def _get_next_action(self, prob_dict):
         return random.choices(list(prob_dict.keys()), weights=list(prob_dict.values()), k=1)[0]
 
-    def _generate_event(self, event_name, session_id, user_id, properties={}):
+    def _generate_event(self, event_name, session_id, user_id, current_time, properties={}):
         return {
             'event_name': event_name,
             'session_id': session_id,
             'user_id': user_id,
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': current_time.isoformat(),
             'properties': properties
         }
 
     def generate_sessions(self):
         all_event_logs = []
-        total_sessions = self.input_data.get('total_sessions', 100)
         
-        print(f"총 {total_sessions}개의 세션 생성을 시작합니다...")
+        print(f"총 {self.total_sessions}개의 세션을 {self.start_date.date()}부터 {self.end_date.date()}까지 생성합니다...")
+
+        # 세션을 기간 내에 균등하게 분배하기 위한 시간 간격 계산
+        time_span = self.end_date - self.start_date
+        time_step = time_span / self.total_sessions
         
-        for _ in range(total_sessions):
-            session_events = self._create_one_session()
+        for i in range(self.total_sessions):
+            # 세션 시작 시간은 균등 간격에 약간의 랜덤 노이즈 추가
+            max_noise_sec = int(time_step.total_seconds() * 0.1)
+            session_start_offset = time_step * i + timedelta(seconds=random.randint(0, max_noise_sec))
+            session_start_time = self.start_date + session_start_offset
+            
+            session_events = self._create_one_session(session_start_time)
             all_event_logs.extend(session_events)
             
         print(f"총 {len(all_event_logs)}개의 이벤트 로그가 생성되었습니다.")
         return all_event_logs
-        
-    def _create_one_session(self):
-        # 유저 풀에서 유저를 가져옴 (기존 create_new_user 호출 대체)
+
+    def _create_one_session(self, session_start_time):
         user = self._get_random_user()
         
         session_id = str(uuid.uuid4())
         event_logs = []
         is_logged_in = user['initial_login_status']
         
-        event_logs.append(self._generate_event('App Launch', session_id, user['user_id']))
-        event_logs.append(self._generate_event('View Main Page', session_id, user['user_id'], {'is_logged_in': is_logged_in}))
+        current_time = session_start_time
+        
+        # 1. App Launch 이벤트
+        event_logs.append(self._generate_event('App Launch', session_id, user['user_id'], current_time))
+        
+        # 2. View Main Page 이벤트
+        min_sec, max_sec = self.config.TIME_DELAY_SECONDS.get('default')
+        current_time += timedelta(seconds=random.uniform(min_sec, max_sec))
+        event_logs.append(self._generate_event('View Main Page', session_id, user['user_id'], current_time, {'is_logged_in': is_logged_in}))
         
         current_rule_name = 'PROB_MAINPAGE_LOGIN' if is_logged_in else 'PROB_MAINPAGE_NOT_LOGIN'
         
         while True:
+            # --- [수정된 로직] ---
+            
+            # 1. 현재 페이지(상태)의 확률 사전을 가져옴
             prob_dict = getattr(self.config, current_rule_name)
+            
+            # 2. 해당 페이지에서 할 행동(Action)을 선택
             chosen_action = self._get_next_action(prob_dict)
-            
-            event_logs.append(self._generate_event(current_rule_name, session_id, user['user_id']))
-            
-            if chosen_action == 'out':
-                break
 
-            # 다음 행동 분기점을 결정하는 로직 (유지)
-            if chosen_action == 'login':
+            # 3. 지연 시간 계산 (현재 페이지 기준)
+            delay_range = self.config.TIME_DELAY_SECONDS.get(current_rule_name, self.config.TIME_DELAY_SECONDS['default'])
+            delay_seconds = random.uniform(*delay_range)
+            current_time += timedelta(seconds=delay_seconds)
+            event_properties = {
+                'time_spent_sec': round(delay_seconds, 2) 
+            }
+
+            # 4. [핵심] "현재 페이지(current_rule_name)"를 먼저 로그로 기록
+            # (재접속 시 이 로그가 찍히게 됨)
+            event_logs.append(self._generate_event(current_rule_name, session_id, user['user_id'], current_time, event_properties))
+            
+            # 5. 'out' 처리 (재접속 또는 종료)
+            if chosen_action == 'out':
+                # 5a. 'out' 이벤트 기록
+                current_time += timedelta(seconds=1) # out을 위한 1초 추가
+                event_logs.append(self._generate_event('out', session_id, user['user_id'], current_time, {}))
+                
+                if random.random() < 0.5: # 50% 확률로 재접속
+                    # 5b. 재접속 이벤트 기록
+                    reconnect_delay_range = self.config.TIME_DELAY_SECONDS.get('default')
+                    reconnect_delay_sec = random.uniform(*reconnect_delay_range) + 5.0
+                    current_time += timedelta(seconds=reconnect_delay_sec)
+                    event_logs.append(self._generate_event('Reconnect_Session', session_id, user['user_id'], current_time, {'is_logged_in': is_logged_in}))
+                    
+                    # 5c. [핵심] current_rule_name을 변경하지 않고 continue
+                    # (다음 루프 시작 시 4번에서 현재 페이지가 다시 찍힘)
+                    continue 
+                else:
+                    break # 세션 종료
+
+            # 6. 'out'이 아닐 때: "다음 루프의 페이지(상태)"를 결정
+            if chosen_action == 'login_success':
+                is_logged_in = True
+                current_rule_name = 'PROB_MAINPAGE_LOGIN'
+            elif chosen_action == 'login':
                 current_rule_name = 'PROB_ON_LOGIN_ATTEMPT'
-                # (참고: 로그인 성공 시 is_logged_in 상태 변경 로직 추가 필요)
+            elif chosen_action == 'mypage':
+                current_rule_name = 'PROB_MYPAGE_LOGIN'
             elif chosen_action in ['search', 'search_text', 'view_recommended_item']:
                 current_rule_name = 'PROB_VIEW_ITEM_LIST'
             elif chosen_action in ['item', 'click_item']:
-                current_rule_name = 'PROB_VIEW_ITEM_LOGIN' if is_logged_in else 'PROB_VIEW_ITEM_NOT_LOGIN'
+                current_rule_name = 'PROB_VIEW_ITEM_LOGIN'
             elif chosen_action == 'add_to_cart':
                 current_rule_name = 'PROB_ACTION_AFTER_ADD_TO_CART'
             elif chosen_action == 'view_cart':
@@ -244,38 +331,57 @@ class SyntheticDataGenerator:
                 current_rule_name = 'PROB_BARO_VISIT'
             elif chosen_action == 'choose_visit':
                 current_rule_name = 'PROB_BARO_PURCHASE'
-            elif chosen_action == 'mypage':
-                current_rule_name = 'PROB_MYPAGE_LOGIN'
             elif chosen_action == 'order_detail':
                 current_rule_name = 'PROB_ORDER_DETAIL'
             elif chosen_action in ['mainpage', 'return_mainpage', 'return_item_list', 'abandon', 'promotion', 'recommand']:
                 current_rule_name = 'PROB_MAINPAGE_LOGIN' if is_logged_in else 'PROB_MAINPAGE_NOT_LOGIN'
             else:
+                print(f"⚠️ 경고: 알 수 없는 chosen_action '{chosen_action}' (from {current_rule_name}). 세션을 종료합니다.")
                 break
                 
         return event_logs
-
 # ----------------------------------------------------
-# 4. 테스트 코드 (JSON 직렬화 및 CSV 저장 로직 포함)
+# 4. 테스트 코드 (사용자 입력 및 XLSX 저장 로직)
 # ----------------------------------------------------
 
-# NumPy 타입(int64 등)을 Python 표준 타입으로 변환하기 위한 함수
+# JSON 직렬화 에러 방지 함수
 def convert_to_python_native(obj):
-    # pandas에서 오는 int64와 같은 NumPy 정수 타입을 파이썬 int로 변환
     if obj.__class__.__name__ in ['int64', 'int32', 'int16']:
         return int(obj)
-    # 다른 타입에 대한 처리 (예: datetime 객체)
     if isinstance(obj, datetime):
         return obj.isoformat()
-    # 그 외 처리하지 못한 타입은 에러 발생
     raise TypeError(f'Object of type {obj.__class__.__name__} is not JSON serializable')
 
 if __name__ == '__main__':
-    # --- Input 데이터 ---
-    test_input = {
-        'total_sessions': 5
-    }
+    print("--- 📊 합성 데이터 생성기 시작 ---")
     
+    # --- [수정] 사용자에게 input_data를 직접 입력받는 로직 ---
+    try:
+        total_sessions = int(input("1. 총 생성할 세션 수 (Total Sessions): "))
+        users_to_sample = int(input("2. 세션에 참여시킬 유저 수 (Users to Sample): "))
+        start_date_str = input("3. 생성 시작 날짜 (YYYY-MM-DD): ")
+        end_date_str = input("4. 생성 종료 날짜 (YYYY-MM-DD): ")
+        
+        # 유효성 검사
+        start_date_check = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_date_check = datetime.strptime(end_date_str, '%Y-%m-%d')
+        
+        if end_date_check <= start_date_check:
+            print("⚠️ 오류: 종료 날짜는 시작 날짜보다 늦어야 합니다. 프로그램을 종료합니다.")
+            sys.exit()
+
+    except ValueError:
+        print("⚠️ 오류: 세션 수와 유저 수는 정수여야 하며, 날짜 형식(YYYY-MM-DD)을 확인해주세요. 프로그램을 종료합니다.")
+        sys.exit()
+        
+    # --- Input 데이터 딕셔너리 생성 ---
+    test_input = {
+        'total_sessions': total_sessions,
+        'users_to_sample': users_to_sample,
+        'start_date': start_date_str,
+        'end_date': end_date_str,
+    }
+
     # --- 객체 생성 ---
     config = Config()
     
@@ -283,21 +389,20 @@ if __name__ == '__main__':
         book_db = pd.read_csv('biblio_data.csv')
         print("✅ 서적 DB ('biblio_data.csv') 로딩 성공!")
     except FileNotFoundError:
-        print("⚠️ 'biblio_data.csv'을 찾을 수 없습니다.")
+        print("⚠️ 'biblio_data.csv'을 찾을 수 없습니다. (경고: 실행은 계속됩니다)")
         book_db = pd.DataFrame() 
         
     # --- 생성기 실행 ---
-    # 변수명이 정확하게 config, book_db, test_input으로 전달되고 있음.
     generator = SyntheticDataGenerator(config, book_db, test_input, user_pool_path='user_pool.csv') 
     generated_data = generator.generate_sessions()
 
-    # --- 결과 출력 및 저장 (유저 기준으로 정리) ---
+    # --- 결과 출력 및 XLSX 저장 ---
     print("\n--- 생성된 전체 세션 데이터 ---")
     
     # 1. generated_data를 DataFrame으로 변환
     log_df = pd.DataFrame(generated_data)
 
-    # 2. 'properties' 딕셔너리를 별도 컬럼으로 분리 (로그인 상태 등)
+    # 2. 'properties' 딕셔너리를 별도 컬럼으로 분리
     if 'properties' in log_df.columns and not log_df['properties'].isnull().all():
         properties_df = pd.json_normalize(log_df['properties'])
         log_df = pd.concat([log_df.drop('properties', axis=1), properties_df], axis=1)
@@ -305,16 +410,14 @@ if __name__ == '__main__':
     # 3. user_id와 timestamp를 기준으로 정렬
     log_df_sorted = log_df.sort_values(by=['user_id', 'timestamp'])
 
-    # 4. DataFrame을 XLSX 파일로 저장하도록 변경
-    # --- pip install openpyxl 명령어로 라이브러리가 설치되어 있어야 합니다. ---
+    # 4. DataFrame을 XLSX 파일로 저장
     OUTPUT_LOG_FILE = 'synthetic_event_logs_by_user.xlsx'
     
     try:
-        # 엑셀 파일로 저장 (Sheet 이름을 지정할 수 있음)
         log_df_sorted.to_excel(
             OUTPUT_LOG_FILE, 
             sheet_name='User_Event_Logs', 
-            index=False # <--- 이 뒤의 'encoding'만 제거하면 돼!
+            index=False 
         )
 
         print(f"✅ 유저별로 정리된 이벤트 로그가 '{OUTPUT_LOG_FILE}' (XLSX) 파일로 저장되었습니다. (총 {len(log_df_sorted)}개)")
@@ -322,7 +425,9 @@ if __name__ == '__main__':
     except ImportError:
         print("\n❌ 에러: XLSX 파일 저장을 위해 'openpyxl' 라이브러리가 필요합니다.")
         print("    터미널에서 'pip install openpyxl' 명령어를 실행해주세요.")
+    except Exception as e:
+        print(f"\n❌ XLSX 파일 저장 중 예상치 못한 오류 발생: {e}")
         
-    # 5. 콘솔에 JSON 형식으로 출력 (디버깅 용이)
+    # 5. 콘솔에 JSON 형식으로 출력 (상위 5개 이벤트)
     print("\n--- 콘솔 JSON 출력 (상위 5개 이벤트) ---")
     print(json.dumps(generated_data[:5], indent=2, ensure_ascii=False, default=convert_to_python_native))
