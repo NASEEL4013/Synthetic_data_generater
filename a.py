@@ -3,7 +3,7 @@ import random
 import uuid
 import json
 from datetime import datetime, timedelta 
-import sys # 프로그램 종료를 위해 sys.exit() 사용
+import sys 
 
 # ----------------------------------------------------
 # 1. Config 클래스: 모든 규칙과 확률 정의
@@ -127,15 +127,15 @@ class Config:
 
     # --- 이벤트/페이지별 체류 시간 (초 단위) ---
     TIME_DELAY_SECONDS = {
-        'default': (1, 3), 
-        'PROB_MAINPAGE_LOGIN': (3, 7),
-        'PROB_MAINPAGE_NOT_LOGIN': (2, 5),
+        'default': (1, 10), 
+        'PROB_MAINPAGE_LOGIN': (3, 10),
+        'PROB_MAINPAGE_NOT_LOGIN': (2, 10),
         'PROB_SEARCH': (5, 12),
-        'PROB_VIEW_ITEM_LIST': (8, 15),
+        'PROB_VIEW_ITEM_LIST': (8, 20),
         'PROB_VIEW_ITEM_LOGIN': (15, 30),
         'PROB_RECOMMANDED_ITEM': (4, 10),
-        'PROB_MYPAGE_LOGIN': (7, 15),
-        'PROB_ORDER_DETAIL': (10, 20),
+        'PROB_MYPAGE_LOGIN': (2, 15),
+        'PROB_ORDER_DETAIL': (10, 30),
         'PROB_ACTION_AFTER_VIEW_CART': (10, 25),
         'PROB_PURCHASE_CLEAR': (5, 10)
     }
@@ -268,8 +268,6 @@ class SyntheticDataGenerator:
         current_rule_name = 'PROB_MAINPAGE_LOGIN' if is_logged_in else 'PROB_MAINPAGE_NOT_LOGIN'
         
         while True:
-            # --- [수정된 로직] ---
-            
             # 1. 현재 페이지(상태)의 확률 사전을 가져옴
             prob_dict = getattr(self.config, current_rule_name)
             
@@ -284,8 +282,7 @@ class SyntheticDataGenerator:
                 'time_spent_sec': round(delay_seconds, 2) 
             }
 
-            # 4. [핵심] "현재 페이지(current_rule_name)"를 먼저 로그로 기록
-            # (재접속 시 이 로그가 찍히게 됨)
+            # 4. "현재 페이지(current_rule_name)"를 먼저 로그로 기록
             event_logs.append(self._generate_event(current_rule_name, session_id, user['user_id'], current_time, event_properties))
             
             # 5. 'out' 처리 (재접속 또는 종료)
@@ -294,7 +291,7 @@ class SyntheticDataGenerator:
                 current_time += timedelta(seconds=1) # out을 위한 1초 추가
                 event_logs.append(self._generate_event('out', session_id, user['user_id'], current_time, {}))
                 
-                if random.random() < 0.5: # 50% 확률로 재접속
+                if random.random() < 0.3: # 30% 확률로 재접속
                     # 5b. 재접속 이벤트 기록
                     reconnect_delay_range = self.config.TIME_DELAY_SECONDS.get('default')
                     reconnect_delay_sec = random.uniform(*reconnect_delay_range) + 5.0
@@ -340,6 +337,16 @@ class SyntheticDataGenerator:
                 break
                 
         return event_logs
+    
+
+
+
+
+
+
+
+
+
 # ----------------------------------------------------
 # 4. 테스트 코드 (사용자 입력 및 XLSX 저장 로직)
 # ----------------------------------------------------
@@ -355,7 +362,7 @@ def convert_to_python_native(obj):
 if __name__ == '__main__':
     print("--- 📊 합성 데이터 생성기 시작 ---")
     
-    # --- [수정] 사용자에게 input_data를 직접 입력받는 로직 ---
+    # 사용자에게 input_data를 직접 입력받는 로직 ---
     try:
         total_sessions = int(input("1. 총 생성할 세션 수 (Total Sessions): "))
         users_to_sample = int(input("2. 세션에 참여시킬 유저 수 (Users to Sample): "))
@@ -428,6 +435,3 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"\n❌ XLSX 파일 저장 중 예상치 못한 오류 발생: {e}")
         
-    # 5. 콘솔에 JSON 형식으로 출력 (상위 5개 이벤트)
-    print("\n--- 콘솔 JSON 출력 (상위 5개 이벤트) ---")
-    print(json.dumps(generated_data[:5], indent=2, ensure_ascii=False, default=convert_to_python_native))
