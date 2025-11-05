@@ -9,7 +9,6 @@ class Config:
     """
     사용자 풀 생성을 위한 기본 설정값.
     """
-    # --- [삭제] USER_PROFILES 및 PROFILE_TO_AGE_RANGE ---
     
     # --- [추가] 연령대별 분포 ---
     AGE_DISTRIBUTION = {
@@ -118,7 +117,6 @@ def create_new_user_for_pool(config, user_sequence):
         'user_id': user_id,
         'gender': gender,
         'age': age,
-        # 'profile': profile, # <- 삭제됨
         'location': location,
         'promo_sensitivity': promo_sensitivity,
         'device': device,
