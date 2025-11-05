@@ -12,11 +12,7 @@ class Config:
     """
     데이터 생성에 필요한 모든 기본 설정(고정값, 확률)을 관리하는 클래스.
     """
-    # --- [삭제] 사용자 프로필 (user_pool.csv에서 제거됨) ---
-    # USER_PROFILES = { ... }
-    # PROFILE_TO_AGE_RANGE = { ... }
-
-    # --- (기존 유지) ---
+    # --- (기존 GENDER_RATIO, USER_INITIAL_LOGIN_RATIO 등 유지) ---
     GENDER_RATIO = {
         '여성': 0.7,
         '남성': 0.3
@@ -26,17 +22,15 @@ class Config:
         'not_login': 0.05
     }
 
-    # --- [유지] 사용자 활동 빈도 티어 (세션 할당 가중치) ---
     SESSION_FREQUENCY_TIERS = {
         'High': 0.6,
         'Medium': 0.3,
         'Low': 0.1
     }
 
-    # --- 행동 시나리오 확률 (유지) ---
     PROB_ON_LOGIN_ATTEMPT = {
         'login_success': 0.9,
-        'out': 0.1
+        'drop-off': 0.1  # 'out' -> 'drop-off'
     }
     PROB_MAINPAGE_NOT_LOGIN = {
         'search': 0.5,
@@ -51,10 +45,12 @@ class Config:
         'mypage': 0.05
     }
     PROB_MYPAGE_LOGIN = {
-        'order_detail': 1
+        'order_detail': 0.8,
+        'mainpage' : 0.2
     }
     PROB_MYPAGE_NOT_LOGIN = {
-        'login': 1
+        'login': 0.9,
+        'mainpage' : 0.1
     }
     PROB_SEARCH = {
         'search_text': 0.3,
@@ -62,62 +58,67 @@ class Config:
     }
     PROB_ORDER_DETAIL = {
         'mainpage': 0.1,
-        'out': 0.9
+        'drop-off': 0.9  
     }
     PROB_ACTION_AFTER_PROMOTION = {
-        'mainpage': 1
+        'mainpage': 0.9,
+        'drop-off' : 0.1
     }
     PROB_RECOMMANDED_ITEM = {
-        'item': 0.2,
-        'mainpage': 0.7,
-        'out': 0.1
+        'item': 0.3,
+        'mainpage': 0.6,
+        'drop-off': 0.1  
     }
     PROB_VIEW_ITEM_LIST = {
         'click_item': 0.95,
-        'out': 0.05
+        'drop-off': 0.05  
     }
     PROB_VIEW_ITEM_NOT_LOGIN = {
         'login': 0.5,
-        'out': 0.5
+        'drop-off': 0.5  
     }
     PROB_VIEW_ITEM_LOGIN = {
-        'add_to_cart': 0.3,
-        'out': 0.5,
+        'add_to_cart': 0.2,
+        'drop-off': 0.2,
         'buy_baro': 0.1,
-        'purchase': 0.1
+        'purchase': 0.1,
+        'return_item_list' : 0.4
     }
     PROB_ACTION_AFTER_ADD_TO_CART = {
-        'view_cart': 0.7,
+        'view_cart': 0.6,
         'return_mainpage': 0.05,
-        'return_item_list': 0.25
+        'return_item_list': 0.35
     }
     PROB_ACTION_AFTER_VIEW_CART = {
-        'purchase': 0.6,
+        'purchase': 0.3,
         'abandon': 0.35,
-        'out': 0.05
+        'return_mainpage' : 0.3,
+        'drop-off': 0.05  
+
     }
     PROB_BARO_SHOP = {
-        'choose_shop': 0.9,
-        'out': 0.1
+        'choose_shop': 0.7,
+        'drop-off': 0.1,
+        'return_item_list' : 0.2
     }
     PROB_BARO_VISIT = {
         'choose_visit': 1
     }
     PROB_BARO_PURCHASE = {
         'purchase': 0.95,
-        'out': 0.05
+        'drop-off': 0.05  # 'out' -> 'drop-off'
     }
     PROB_PURCHASE = {
         'purchase': 0.95,
-        'out': 0.05
+        'drop-off': 0.05  # 'out' -> 'drop-off'
     }
     PROB_PURCHASE_CLEAR = {
         'return_mainpage': 0.15,
         'order_detail': 0.6,
-        'out': 0.25
+        'drop-off': 0.25  # 'out' -> 'drop-off'
     }
 
-    # --- 이벤트/페이지별 체류 시간 (유지) ---
+    # --- (기존 TIME_DELAY_SECONDS 유지) ---
     TIME_DELAY_SECONDS = {
         'default': (1, 3), 
         'PROB_MAINPAGE_LOGIN': (3, 7),
@@ -247,7 +248,12 @@ class SyntheticDataGenerator:
     def _create_one_session(self, session_start_time):
         user = self._get_random_user()
         
-        session_id = str(uuid.uuid4())
+        # --- [수정] 세션 ID 생성 방식 ---
+        date_str = session_start_time.strftime('%Y%m%d')
+        random_part = f"{random.randint(0, 99999999):08d}"
+        session_id = f"s{date_str}_{random_part}"
+        # --- [수정 끝] ---
+        
         event_logs = []
         is_logged_in = user['initial_login_status']
         
@@ -281,11 +287,11 @@ class SyntheticDataGenerator:
             # 4. "현재 페이지(current_rule_name)"를 먼저 로그로 기록
             event_logs.append(self._generate_event(current_rule_name, session_id, user['user_id'], current_time, event_properties))
             
-            # 5. 'out' 처리 (재접속 또는 종료)
-            if chosen_action == 'out':
-                # 5a. 'out' 이벤트 기록
-                current_time += timedelta(seconds=1) # out을 위한 1초 추가
-                event_logs.append(self._generate_event('out', session_id, user['user_id'], current_time, {}))
+            # 5. [수정] 'drop-off' 처리 (재접속 또는 종료)
+            if chosen_action == 'drop-off':
+                # 5a. 'drop-off' 이벤트 기록
+                current_time += timedelta(seconds=1) # 1초 추가
+                event_logs.append(self._generate_event('drop-off', session_id, user['user_id'], current_time, {}))
                 
                 if random.random() < 0.5: # 50% 확률로 재접속
                     # 5b. 재접속 이벤트 기록
@@ -299,15 +305,16 @@ class SyntheticDataGenerator:
                 else:
                     break # 세션 종료
 
-            # 6. 'out'이 아닐 때: "다음 루프의 페이지(상태)"를 결정
+            # 6. 'drop-off'가 아닐 때: "다음 루프의 페이지(상태)"를 결정
             if chosen_action == 'login_success':
                 is_logged_in = True
                 current_rule_name = 'PROB_MAINPAGE_LOGIN'
+            # ... (나머지 if/elif 블록은 동일하게 유지) ...
             elif chosen_action == 'login':
                 current_rule_name = 'PROB_ON_LOGIN_ATTEMPT'
             elif chosen_action == 'mypage':
                 current_rule_name = 'PROB_MYPAGE_LOGIN'
-            elif chosen_action in ['search', 'search_text', 'view_recommended_item']:
+            elif chosen_action in ['search', 'search_text', 'view_recommended_item', 'return_item_list']:
                 current_rule_name = 'PROB_VIEW_ITEM_LIST'
             elif chosen_action in ['item', 'click_item']:
                 current_rule_name = 'PROB_VIEW_ITEM_LOGIN'
