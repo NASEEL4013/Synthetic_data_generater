@@ -34,7 +34,6 @@ class Config:
         (95, 99): 0.001
     }
 
-    # --- (기존 유지) ---
     GENDER_RATIO = {
         '여성': 0.49,
         '남성': 0.49,
@@ -42,13 +41,13 @@ class Config:
     }
     
     EVER_CATEGORY_PROB_TRUE = {
-        'ever_M': 0.3,
-        'ever_Y': 0.6,
+        'ever_M': 0.2,
+        'ever_Y': 0.15,
         'ever_K': 0.15
     }
 
 # ----------------------------------------------------
-# 2. 사용자 생성을 위한 샘플 데이터 (변경 없음)
+# 2. 사용자 생성을 위한 샘플 데이터 
 # ----------------------------------------------------
 LOCATIONS_BY_CITY = {
     '서울시': ['강남구', '마포구', '서초구', '송파구', '영등포구', '종로구'],
@@ -61,7 +60,7 @@ LOCATIONS_BY_CITY = {
 PROMO_SENSITIVITY_LEVELS = ['high', 'medium', 'low']
 
 # ----------------------------------------------------
-# 3. 나이 기반 기기 할당 함수 (변경 없음)
+# 3. 나이 기반 기기 할당 함수 
 # ----------------------------------------------------
 def get_device_by_age(age):
     """
@@ -77,13 +76,12 @@ def get_device_by_age(age):
     return 'iPhone' if random.random() < iphone_ratio else 'Galaxy'
 
 # ----------------------------------------------------
-# 4. 사용자 생성 함수 (수정)
+# 4. 사용자 생성 함수 
 # ----------------------------------------------------
 def create_new_user_for_pool(config, user_sequence):
     """
     사용자 풀에 저장될 사용자 1명의 데이터를 생성합니다.
     """
-    # --- [수정] 프로필 로직 삭제, 나이 생성 로직 변경 ---
     # 성별 생성
     gender = random.choices(list(config.GENDER_RATIO.keys()), weights=list(config.GENDER_RATIO.values()), k=1)[0]
     
@@ -96,7 +94,6 @@ def create_new_user_for_pool(config, user_sequence):
     min_age, max_age = selected_range
     age = random.randint(min_age, max_age)
     
-    # --- (기존 로직 유지) ---
     # 순번 기반 ID 및 상세 지역 정보 생성
     user_id = f"{user_sequence:08d}"
     city = random.choice(list(LOCATIONS_BY_CITY.keys()))
@@ -112,7 +109,6 @@ def create_new_user_for_pool(config, user_sequence):
     ever_Y = random.random() < config.EVER_CATEGORY_PROB_TRUE['ever_Y']
     ever_K = random.random() < config.EVER_CATEGORY_PROB_TRUE['ever_K']
     
-    # --- [수정] 반환 딕셔너리에서 'profile' 삭제 ---
     return {
         'user_id': user_id,
         'gender': gender,
@@ -126,7 +122,7 @@ def create_new_user_for_pool(config, user_sequence):
     }
 
 # ----------------------------------------------------
-# 5. 메인 실행 코드 (변경 없음)
+# 5. 메인 실행 코드
 # ----------------------------------------------------
 if __name__ == '__main__':
     NUMBER_OF_USERS_TO_CREATE = 1000000
@@ -144,6 +140,4 @@ if __name__ == '__main__':
     user_pool_df = pd.DataFrame(user_list)
     user_pool_df.to_csv(OUTPUT_CSV_FILE, index=False, encoding='utf-8-sig')
 
-    print(f"✅ 완료! 사용자 풀이 '{OUTPUT_CSV_FILE}' 파일로 성공적으로 저장되었습니다.")
-    print("\n--- 생성된 데이터 샘플 (상위 5명) ---")
-    print(user_pool_df.head())
+    

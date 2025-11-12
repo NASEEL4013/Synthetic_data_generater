@@ -12,7 +12,6 @@ class Config:
     """
     데이터 생성에 필요한 모든 기본 설정(고정값, 확률)을 관리하는 클래스.
     """
-    # --- (기존 GENDER_RATIO, USER_INITIAL_LOGIN_RATIO 등 유지) ---
     GENDER_RATIO = {
         '여성': 0.7,
         '남성': 0.3
@@ -22,15 +21,17 @@ class Config:
         'not_login': 0.05
     }
 
+    # 사용자 활동 빈도 티어 (세션 할당 가중치)
     SESSION_FREQUENCY_TIERS = {
         'High': 0.6,
         'Medium': 0.3,
         'Low': 0.1
     }
 
+    # --- 행동 시나리오 확률 ---
     PROB_ON_LOGIN_ATTEMPT = {
         'login_success': 0.9,
-        'drop-off': 0.1  # 'out' -> 'drop-off'
+        'drop-off': 0.1
     }
     PROB_MAINPAGE_NOT_LOGIN = {
         'search': 0.5,
@@ -54,12 +55,14 @@ class Config:
     }
     PROB_SEARCH = {
         'search_text': 0.3,
-        'view_recommended_item': 0.7
+        'view_recommended_item': 0.5,
+        'return_mainpage': 0.2
     }
     PROB_ORDER_DETAIL = {
         'mainpage': 0.1,
         'drop-off': 0.9  
     }
+    # 프로모션 이후 행동 (10% 이탈 가능성 추가)
     PROB_ACTION_AFTER_PROMOTION = {
         'mainpage': 0.9,
         'drop-off' : 0.1
@@ -94,7 +97,6 @@ class Config:
         'abandon': 0.35,
         'return_mainpage' : 0.3,
         'drop-off': 0.05  
-
     }
     PROB_BARO_SHOP = {
         'choose_shop': 0.7,
@@ -106,19 +108,19 @@ class Config:
     }
     PROB_BARO_PURCHASE = {
         'purchase': 0.95,
-        'drop-off': 0.05  # 'out' -> 'drop-off'
+        'drop-off': 0.05
     }
     PROB_PURCHASE = {
         'purchase': 0.95,
-        'drop-off': 0.05  # 'out' -> 'drop-off'
+        'drop-off': 0.05
     }
     PROB_PURCHASE_CLEAR = {
         'return_mainpage': 0.15,
         'order_detail': 0.6,
-        'drop-off': 0.25  # 'out' -> 'drop-off'
+        'drop-off': 0.25
     }
 
-    # --- (기존 TIME_DELAY_SECONDS 유지) ---
+    # --- 이벤트/페이지별 체류 시간 (초 단위) ---
     TIME_DELAY_SECONDS = {
         'default': (1, 3), 
         'PROB_MAINPAGE_LOGIN': (3, 7),
@@ -130,7 +132,8 @@ class Config:
         'PROB_MYPAGE_LOGIN': (7, 15),
         'PROB_ORDER_DETAIL': (10, 20),
         'PROB_ACTION_AFTER_VIEW_CART': (10, 25),
-        'PROB_PURCHASE_CLEAR': (5, 10)
+        'PROB_PURCHASE_CLEAR': (5, 10),
+        'PROB_ACTION_AFTER_PROMOTION': (3, 8) 
     }
 
 # ----------------------------------------------------
@@ -139,7 +142,13 @@ class Config:
 class SyntheticDataGenerator:
     def __init__(self, config, book_db, input_data, user_pool_path='user_pool.csv'):
         self.config = config
+        
+        # 서적 DB 저장 (이미 가중치가 적용된 파일이라고 가정)
         self.book_db = book_db
+        if not self.book_db.empty:
+            if 'purchase_weight' not in self.book_db.columns:
+                print("⚠️ 경고: book_db에 'purchase_weight' 컬럼이 없습니다. 모든 책의 가중치를 1로 설정합니다.")
+                self.book_db['purchase_weight'] = 1 
         
         # 기간 및 세션 수 데이터 로드
         self.total_sessions = input_data.get('total_sessions', 100)
@@ -161,11 +170,7 @@ class SyntheticDataGenerator:
         else:
             self.sampled_user_pool = self.user_pool
             
-        # --- [삭제] 1. 프로필 가중치 계산 (profile 컬럼 없음) ---
-        # profile_weights = [] ... (관련 로직 전체 삭제)
-        
-        # --- [수정] 2. 활동 빈도 티어 할당 및 최종 세션 가중치 계산 ---
-        # (프로필 가중치 없이 활동 빈도만으로 계산)
+        # 활동 빈도 티어 할당 및 최종 세션 가중치 계산
         tiers = list(self.config.SESSION_FREQUENCY_TIERS.keys())
         tier_weights = list(self.config.SESSION_FREQUENCY_TIERS.values())
         
@@ -174,7 +179,7 @@ class SyntheticDataGenerator:
         
         frequency_map = self.config.SESSION_FREQUENCY_TIERS
         
-        # [수정] profile_weights 없이 frequency_map만으로 가중치 리스트 생성
+        # frequency_map만으로 가중치 리스트 생성 (프로필 제거됨)
         self.session_weights = [
             frequency_map[self.sampled_user_pool.iloc[i]['frequency_tier']]
             for i in range(len(self.sampled_user_pool))
@@ -203,25 +208,22 @@ class SyntheticDataGenerator:
             'user_id': selected_user_row['user_id'],
             'gender': selected_user_row['gender'],
             'age': selected_user_row['age'],
-            # 'profile': selected_user_row['profile'], # <- [삭제] profile 컬럼 없음
             'initial_login_status': (login_type == 'login')
         }
 
-    # _get_next_action (변경 없음)
     def _get_next_action(self, prob_dict):
         return random.choices(list(prob_dict.keys()), weights=list(prob_dict.values()), k=1)[0]
 
-    # _generate_event (변경 없음)
-    def _generate_event(self, event_name, session_id, user_id, current_time, properties={}):
+    def _generate_event(self, event_name, session_id, user_id, current_time, event_sequence, properties={}):
         return {
             'event_name': event_name,
             'session_id': session_id,
             'user_id': user_id,
             'timestamp': current_time.isoformat(),
+            'event_sequence': event_sequence,
             'properties': properties
         }
 
-    # generate_sessions (변경 없음)
     def generate_sessions(self):
         all_event_logs = []
         
@@ -244,80 +246,97 @@ class SyntheticDataGenerator:
         print(f"총 {len(all_event_logs)}개의 이벤트 로그가 생성되었습니다.")
         return all_event_logs
 
-    # _create_one_session (버그 수정된 최종본 유지 - 변경 없음)
     def _create_one_session(self, session_start_time):
         user = self._get_random_user()
         
-        # --- [수정] 세션 ID 생성 방식 ---
+        # 세션 ID 생성 (sYYYYMMDD_8자리)
         date_str = session_start_time.strftime('%Y%m%d')
         random_part = f"{random.randint(0, 99999999):08d}"
         session_id = f"s{date_str}_{random_part}"
-        # --- [수정 끝] ---
         
         event_logs = []
         is_logged_in = user['initial_login_status']
-        
         current_time = session_start_time
         
+        # 현재 세션에서 선택된 책 정보를 기억할 변수
+        session_context = {}
+        
         # 1. App Launch 이벤트
-        event_logs.append(self._generate_event('App Launch', session_id, user['user_id'], current_time))
+        event_logs.append(self._generate_event('App Launch', session_id, user['user_id'], current_time, 1))
         
         # 2. View Main Page 이벤트
         min_sec, max_sec = self.config.TIME_DELAY_SECONDS.get('default')
         current_time += timedelta(seconds=random.uniform(min_sec, max_sec))
-        event_logs.append(self._generate_event('View Main Page', session_id, user['user_id'], current_time, {'is_logged_in': is_logged_in}))
+        event_logs.append(self._generate_event('View Main Page', session_id, user['user_id'], current_time, 2, {'is_logged_in': is_logged_in}))
         
         current_rule_name = 'PROB_MAINPAGE_LOGIN' if is_logged_in else 'PROB_MAINPAGE_NOT_LOGIN'
+        event_sequence = 3 
         
         while True:
-            # 1. 현재 페이지(상태)의 확률 사전을 가져옴
             prob_dict = getattr(self.config, current_rule_name)
-            
-            # 2. 해당 페이지에서 할 행동(Action)을 선택
             chosen_action = self._get_next_action(prob_dict)
-
-            # 3. 지연 시간 계산 (현재 페이지 기준)
+            
             delay_range = self.config.TIME_DELAY_SECONDS.get(current_rule_name, self.config.TIME_DELAY_SECONDS['default'])
             delay_seconds = random.uniform(*delay_range)
             current_time += timedelta(seconds=delay_seconds)
+            
             event_properties = {
                 'time_spent_sec': round(delay_seconds, 2) 
             }
 
-            # 4. "현재 페이지(current_rule_name)"를 먼저 로그로 기록
-            event_logs.append(self._generate_event(current_rule_name, session_id, user['user_id'], current_time, event_properties))
+            # 책 정보가 context에 있으면 properties에 추가
+            if 'current_book' in session_context:
+                if current_rule_name in [
+                    'PROB_VIEW_ITEM_LOGIN', 'PROB_ACTION_AFTER_ADD_TO_CART', 
+                    'PROB_ACTION_AFTER_VIEW_CART', 'PROB_PURCHASE_CLEAR',
+                    'PROB_BARO_SHOP', 'PROB_BARO_VISIT', 'PROB_BARO_PURCHASE'
+                ]:
+                    book = session_context['current_book']
+                    event_properties['item_id'] = book.get('ID', book.get('Id', None))
+                    event_properties['item_title'] = book.get('제목', None) # [추가] 책 제목 추가
+                    event_properties['item_price'] = book.get('가격', None)
+                    event_properties['item_category'] = book.get('카테고리', None)
+
+                if current_rule_name in ['PROB_MAINPAGE_LOGIN', 'PROB_MAINPAGE_NOT_LOGIN', 'PROB_VIEW_ITEM_LIST']:
+                    del session_context['current_book']
+
+            # "현재 페이지" 로그 기록
+            event_logs.append(self._generate_event(current_rule_name, session_id, user['user_id'], current_time, event_sequence, event_properties))
+            event_sequence += 1 
             
-            # 5. [수정] 'drop-off' 처리 (재접속 또는 종료)
+            # 'drop-off' 처리
             if chosen_action == 'drop-off':
-                # 5a. 'drop-off' 이벤트 기록
-                current_time += timedelta(seconds=1) # 1초 추가
-                event_logs.append(self._generate_event('drop-off', session_id, user['user_id'], current_time, {}))
+                current_time += timedelta(seconds=1) 
+                event_logs.append(self._generate_event('drop-off', session_id, user['user_id'], current_time, event_sequence, {}))
+                event_sequence += 1 
                 
                 if random.random() < 0.5: # 50% 확률로 재접속
-                    # 5b. 재접속 이벤트 기록
                     reconnect_delay_range = self.config.TIME_DELAY_SECONDS.get('default')
                     reconnect_delay_sec = random.uniform(*reconnect_delay_range) + 5.0
                     current_time += timedelta(seconds=reconnect_delay_sec)
-                    event_logs.append(self._generate_event('Reconnect_Session', session_id, user['user_id'], current_time, {'is_logged_in': is_logged_in}))
-                    
-                    # 5c. current_rule_name을 변경하지 않고 continue
+                    event_logs.append(self._generate_event('Reconnect_Session', session_id, user['user_id'], current_time, event_sequence, {'is_logged_in': is_logged_in}))
+                    event_sequence += 1 
                     continue 
                 else:
-                    break # 세션 종료
+                    break 
 
-            # 6. 'drop-off'가 아닐 때: "다음 루프의 페이지(상태)"를 결정
-            if chosen_action == 'login_success':
+            # 다음 행동 분기점 결정
+            if chosen_action == 'click_item':
+                if not self.book_db.empty and 'purchase_weight' in self.book_db.columns:
+                    # 가중치('purchase_weight')를 사용해 책 1권 샘플링
+                    selected_book_row = self.book_db.sample(n=1, weights='purchase_weight').iloc[0]
+                    session_context['current_book'] = selected_book_row.to_dict()
+                current_rule_name = 'PROB_VIEW_ITEM_LOGIN'
+
+            elif chosen_action == 'login_success':
                 is_logged_in = True
                 current_rule_name = 'PROB_MAINPAGE_LOGIN'
-            # ... (나머지 if/elif 블록은 동일하게 유지) ...
             elif chosen_action == 'login':
                 current_rule_name = 'PROB_ON_LOGIN_ATTEMPT'
             elif chosen_action == 'mypage':
                 current_rule_name = 'PROB_MYPAGE_LOGIN'
-            elif chosen_action in ['search', 'search_text', 'view_recommended_item', 'return_item_list']:
+            elif chosen_action in ['search', 'search_text', 'view_recommended_item']:
                 current_rule_name = 'PROB_VIEW_ITEM_LIST'
-            elif chosen_action in ['item', 'click_item']:
-                current_rule_name = 'PROB_VIEW_ITEM_LOGIN'
             elif chosen_action == 'add_to_cart':
                 current_rule_name = 'PROB_ACTION_AFTER_ADD_TO_CART'
             elif chosen_action == 'view_cart':
@@ -332,7 +351,11 @@ class SyntheticDataGenerator:
                 current_rule_name = 'PROB_BARO_PURCHASE'
             elif chosen_action == 'order_detail':
                 current_rule_name = 'PROB_ORDER_DETAIL'
-            elif chosen_action in ['mainpage', 'return_mainpage', 'return_item_list', 'abandon', 'promotion', 'recommand']:
+            elif chosen_action == 'promotion':
+                current_rule_name = 'PROB_ACTION_AFTER_PROMOTION' 
+            elif chosen_action in ['mainpage', 'return_mainpage', 'return_item_list', 'abandon', 'recommand']:
+                if 'current_book' in session_context and chosen_action in ['return_item_list', 'return_mainpage']:
+                    del session_context['current_book']
                 current_rule_name = 'PROB_MAINPAGE_LOGIN' if is_logged_in else 'PROB_MAINPAGE_NOT_LOGIN'
             else:
                 print(f"⚠️ 경고: 알 수 없는 chosen_action '{chosen_action}' (from {current_rule_name}). 세션을 종료합니다.")
@@ -341,7 +364,7 @@ class SyntheticDataGenerator:
         return event_logs
 
 # ----------------------------------------------------
-# 4. 테스트 코드 (사용자 입력 및 XLSX 저장 로직)
+# 4. 메인 실행 코드
 # ----------------------------------------------------
 
 # JSON 직렬화 에러 방지 함수
@@ -386,11 +409,11 @@ if __name__ == '__main__':
     config = Config()
     
     try:
-        # --- [수정] 파일명 변경 ---
-        book_db = pd.read_csv('biblio_data_filtered.csv')
-        print("✅ 서적 DB ('biblio_data_filtered.csv') 로딩 성공!")
+        # --- 가중치가 추가된 새 파일 경로 로드 ---
+        book_db = pd.read_csv('BDB/biblio_data_with_weights.csv')
+        print("✅ 서적 DB ('BDB/biblio_data_with_weights.csv') 로딩 성공!")
     except FileNotFoundError:
-        print("⚠️ 'biblio_data_filtered.csv'을 찾을 수 없습니다. (경고: 실행은 계속됩니다)")
+        print("⚠️ 'BDB/biblio_data_with_weights.csv'을 찾을 수 없습니다. (경로를 확인하거나 add_weights.py를 실행하세요)")
         book_db = pd.DataFrame() 
         
     # --- 생성기 실행 ---
